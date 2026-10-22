@@ -84,6 +84,7 @@ fn start_optimizer(
                 &config.cmpr_cfg,
                 initial_solution.as_ref(),
             )
+            .map(|(solution, _)| solution)
         })
         .expect("failed to start optimizer")
 }
@@ -166,6 +167,7 @@ fn export_final_solution(
         &ExtSPOutput {
             instance: ext_instance.clone(),
             solution: jagua_rs::probs::spp::io::export(solution, *EPOCH),
+            stop_reason: None,
         },
         Path::new(&json_path),
         Level::Info,

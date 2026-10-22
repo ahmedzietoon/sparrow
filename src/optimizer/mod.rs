@@ -14,6 +14,7 @@ use log::info;
 use rand::{Rng, SeedableRng};
 use std::time::Duration;
 use rand::rngs::Xoshiro256PlusPlus;
+use serde::{Deserialize, Serialize};
 
 pub mod lbf;
 pub mod separator;
@@ -25,6 +26,7 @@ pub mod compress;
 ///
 /// Returns a construction error if no initial solution is supplied and the
 /// initial-placement heuristic cannot build one within its strip growth limit.
+/// The second value says why the search stopped.
 pub fn optimize(
     instance: SPInstance,
     mut rng: Xoshiro256PlusPlus,
@@ -33,7 +35,7 @@ pub fn optimize(
     expl_config: &ExplorationConfig,
     cmpr_config: &CompressionConfig,
     initial_solution: Option<&SPSolution>
-) -> anyhow::Result<SPSolution> {
+) -> anyhow::Result<(SPSolution, StopReason)> {
     let mut next_rng = || Xoshiro256PlusPlus::seed_from_u64(rng.next_u64());
     
     // First build an initial solution if none is provided
@@ -61,6 +63,8 @@ pub fn optimize(
         expl_config,
     );
     let final_explore_sol = solutions.into_iter().last().unwrap();
+    let expl_calls = expl_separator.total_separations;
+    let expl_stop = phase_stop_reason(terminator, expl_config.max_separations, expl_calls);
 
     // Start the compression phase from the final solution from the exploration phase
     sol_listener.report_phase(OptimizationPhase::Compression);
@@ -74,10 +78,47 @@ pub fn optimize(
         cmpr_config,
     );
 
+    let cmpr_calls = cmpr_separator.total_separations;
+    let cmpr_stop = phase_stop_reason(terminator, cmpr_config.max_separations, cmpr_calls);
+    let stop = expl_stop.max(cmpr_stop);
+    info!("[OPT] separator calls: exploration {expl_calls}, compression {cmpr_calls}, stop: {stop:?}");
+
     sol_listener.report(ReportType::Final, &cmpr_sol);
 
-    // Return the final compressed solution
-    Ok(cmpr_sol)
+    // Return the final compressed solution and why the search stopped
+    Ok((cmpr_sol, stop))
+}
+
+/// Why the optimizer stopped, in increasing order of machine dependence.
+/// `Converged` and `Budget` give the same output on any machine (for a fixed seed and budget);
+/// `SafetyStop` means a wall-clock cap (or Ctrl-C) ended a phase, so the result depends on machine speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// Written to snapshots while the search is still running
+    InProgress,
+    /// Every phase ended by its own criteria (failure count or strip width lower bound)
+    Converged,
+    /// A phase used up its separation budget (`--max-separations`)
+    Budget,
+    /// The wall-clock safety cap, or Ctrl-C, ended a phase
+    SafetyStop,
+}
+
+/// True once a phase has made `max_separations` separator calls. Never true without a budget.
+fn budget_spent(max_separations: Option<usize>, used: usize) -> bool {
+    max_separations.is_some_and(|max| used >= max)
+}
+
+/// Why a phase ended. The wall clock is checked first: a phase cut by the clock is not reproducible.
+fn phase_stop_reason(term: &impl Terminator, max_separations: Option<usize>, used: usize) -> StopReason {
+    if term.kill() {
+        StopReason::SafetyStop
+    } else if budget_spent(max_separations, used) {
+        StopReason::Budget
+    } else {
+        StopReason::Converged
+    }
 }
 
 /// Conservative lower bound on strip width, including the container's inset.

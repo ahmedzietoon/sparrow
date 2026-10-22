@@ -2,6 +2,7 @@ pub mod assertions;
 
 pub mod io;
 pub mod listener;
+pub mod snapshot_exporter;
 pub mod svg_exporter;
 pub mod terminator;
 

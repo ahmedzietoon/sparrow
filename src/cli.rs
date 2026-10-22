@@ -17,6 +17,7 @@ use anyhow::{bail, Result};
 use rand::rngs::Xoshiro256PlusPlus;
 use sparrow::consts::{DEFAULT_COMPRESS_TIME_RATIO, DEFAULT_EXPLORE_TIME_RATIO, DEFAULT_FAIL_DECAY_RATIO_CMPR, DEFAULT_MAX_CONSEQ_FAILS_EXPL, LOG_LEVEL_FILTER_DEBUG, LOG_LEVEL_FILTER_RELEASE};
 use sparrow::util::ctrlc_terminator::CtrlCTerminator;
+use sparrow::util::snapshot_exporter::SnapshotExporter;
 use sparrow::util::svg_exporter::SvgExporter;
 
 pub const OUTPUT_DIR: &str = "output";
@@ -84,10 +85,10 @@ pub fn run() -> Result<()>{
 
     info!("[MAIN] loaded instance {} with #{} items", ext_instance.name, instance.total_item_qty());
     
-    let mut svg_exporter = {
+    let svg_exporter = {
         let final_svg_path = Some(format!("{OUTPUT_DIR}/final_{}.svg", ext_instance.name));
 
-        let intermediate_svg_dir = match cfg!(feature = "only_final_svg") {
+        let intermediate_svg_dir = match cfg!(feature = "only_final_svg") || args.no_intermediate_svg {
             true => None,
             false => Some(format!("{OUTPUT_DIR}/sols_{}", ext_instance.name))
         };
@@ -104,12 +105,16 @@ pub fn run() -> Result<()>{
         )
     };
     
+    let mut sol_listener = (
+        svg_exporter,
+        SnapshotExporter::new(args.snapshot.clone(), ext_instance.clone()),
+    );
     let mut ctrlc_terminator = CtrlCTerminator::new();
 
-    let solution = optimize(
+    let (solution, stop_reason) = optimize(
         instance,
         rng,
-        &mut svg_exporter,
+        &mut sol_listener,
         &mut ctrlc_terminator,
         &config.expl_cfg,
         &config.cmpr_cfg,
@@ -119,7 +124,8 @@ pub fn run() -> Result<()>{
     let json_path = format!("{OUTPUT_DIR}/final_{}.json", ext_instance.name);
     let json_output = ExtSPOutput {
         instance: ext_instance,
-        solution: jagua_rs::probs::spp::io::export(&solution, *EPOCH)
+        solution: jagua_rs::probs::spp::io::export(&solution, *EPOCH),
+        stop_reason: Some(stop_reason),
     };
     io::write_json(&json_output, Path::new(json_path.as_str()), Level::Info)?;
 

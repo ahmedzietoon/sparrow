@@ -32,6 +32,8 @@ pub struct Separator {
     pub prob: SPProblem,
     pub ct: CollisionTracker,
     pub total_evals: usize,
+    /// Number of `separate` calls made by this separator (the unit of the `--max-separations` budget)
+    pub total_separations: usize,
     pub workers: Vec<SeparatorWorker>,
     pub config: SeparatorConfig,
     pub thread_pool: Option<ThreadPool>,
@@ -61,6 +63,7 @@ impl Separator {
             rng,
             ct,
             total_evals: 0,
+            total_separations: 0,
             workers,
             config,
             thread_pool: pool,
@@ -69,6 +72,7 @@ impl Separator {
 
     /// Algorithm 9 from https://doi.org/10.48550/arXiv.2509.13329
     pub fn separate(&mut self, term: &impl Terminator, sol_listener: &mut impl SolutionListener) -> (SPSolution, CTSnapshot) {
+        self.total_separations += 1;
         let mut min_loss_sol = (self.prob.save(), self.ct.save());
         let mut min_loss = self.ct.get_total_loss();
         let strip_width = self.prob.strip_width();

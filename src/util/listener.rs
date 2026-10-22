@@ -60,3 +60,31 @@ impl SolutionListener for DummySolListener {
         // Do nothing
     }
 }
+
+/// Two listeners in one, called in order, e.g. `(svg_exporter, snapshot_exporter)`.
+impl<A: SolutionListener, B: SolutionListener> SolutionListener for (A, B) {
+    fn report(&mut self, report: ReportType, solution: &SPSolution) {
+        self.0.report(report.clone(), solution);
+        self.1.report(report, solution);
+    }
+
+    fn report_phase(&mut self, phase: OptimizationPhase) {
+        self.0.report_phase(phase);
+        self.1.report_phase(phase);
+    }
+
+    fn report_separation_progress(&mut self, progress: SeparationProgress) {
+        self.0.report_separation_progress(progress);
+        self.1.report_separation_progress(progress);
+    }
+
+    fn report_separation_result(&mut self, result: SeparationResult) {
+        self.0.report_separation_result(result);
+        self.1.report_separation_result(result);
+    }
+
+    fn report_compression_progress(&mut self, shrink_step: f32) {
+        self.0.report_compression_progress(shrink_step);
+        self.1.report_compression_progress(shrink_step);
+    }
+}

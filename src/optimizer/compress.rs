@@ -21,12 +21,15 @@ pub fn compression_phase(
     let mut n_failed_attempts = 0;
 
     // Create the function to calculate the shrink step size.
-    let shrink_step_size = |n_failed_attempts: i32| -> f32 {
+    let shrink_step_size = |n_failed_attempts: i32, n_separations: usize| -> f32 {
         match config.shrink_decay {
             ShrinkDecayStrategy::TimeBased => {
                 let range = config.shrink_range.1 - config.shrink_range.0;
-                let elapsed = start.elapsed();
-                let ratio = elapsed.as_secs_f32() / config.time_limit.as_secs_f32();
+                // With a separation budget the decay follows the budget, so the result does not depend on machine speed
+                let ratio = match config.max_separations {
+                    Some(max) => (n_separations as f32 / max as f32).min(1.0),
+                    None => start.elapsed().as_secs_f32() / config.time_limit.as_secs_f32(),
+                };
                 config.shrink_range.0 + ratio * range
             }
             ShrinkDecayStrategy::FailureBased(r) => {
@@ -36,7 +39,7 @@ pub fn compression_phase(
     };
 
     // As long as the shrink step size is above the minimum, keep attempting to compress
-    while !term.kill() && let step = shrink_step_size(n_failed_attempts) && step >= config.shrink_range.1 {
+    while !term.kill() && !super::budget_spent(config.max_separations, sep.total_separations) && let step = shrink_step_size(n_failed_attempts, sep.total_separations) && step >= config.shrink_range.1 {
         let width = best_sol.strip_width();
         let next_width = width * (1.0 - step);
         if next_width < width_lower_bound || next_width >= width {

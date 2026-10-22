@@ -33,7 +33,7 @@ pub fn exploration_phase(sep: &mut Separator, sol_listener: &mut impl SolutionLi
 
     let mut infeas_sol_pool: Vec<(SPSolution, f32)> = vec![];
 
-    while !term.kill() {
+    while !term.kill() && !super::budget_spent(config.max_separations, sep.total_separations) {
         // Attempt to separate the current layout
         let local_best = sep.separate(term, sol_listener);
         let total_loss = local_best.1.get_total_loss();

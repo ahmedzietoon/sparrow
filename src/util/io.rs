@@ -1,5 +1,7 @@
 use crate::EPOCH;
-use crate::config::SparrowConfig;
+use crate::config::{ShrinkDecayStrategy, SparrowConfig};
+use crate::consts::DEFAULT_EXPLORE_TIME_RATIO;
+use crate::optimizer::StopReason;
 use anyhow::{Context, Result};
 use clap::Parser;
 use jagua_rs::probs::spp::io::ext_repr::{ExtSPInstance, ExtSPSolution};
@@ -7,10 +9,19 @@ use log::{log, warn, Level, LevelFilter};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter};
 use std::num::NonZeroUsize;
 use std::path::Path;
 use svg::Document;
+
+fn parse_decay(s: &str) -> Result<f32, String> {
+    let r: f32 = s.parse().map_err(|e| format!("not a number: {e}"))?;
+    if r > 0.0 && r < 1.0 {
+        Ok(r)
+    } else {
+        Err(format!("must be strictly between 0 and 1, got {r}"))
+    }
+}
 
 #[derive(Parser)]
 pub struct MainCli {
@@ -40,6 +51,26 @@ pub struct MainCli {
     /// Number of worker threads used by the separator
     #[arg(long)]
     pub workers: Option<NonZeroUsize>,
+
+    /// Deterministic work budget: total separator calls, split 80/20 between exploration and compression like -t
+    #[arg(long, value_name = "N", help = "Stop after N separator calls (80% exploration, 20% compression); -t then acts only as a safety cap")]
+    pub max_separations: Option<NonZeroUsize>,
+
+    /// Consecutive failed exploration attempts that end exploration (default 10 with -x)
+    #[arg(long, value_name = "N", help = "Stop exploration after N consecutive failed attempts (default 10 with -x)")]
+    pub max_fails: Option<NonZeroUsize>,
+
+    /// Compression shrink decay per failed attempt, strictly between 0 and 1 (default 0.9 with -x)
+    #[arg(long, value_name = "R", value_parser = parse_decay, help = "Compression shrink decay per failed attempt, 0 < R < 1 (default 0.9 with -x)")]
+    pub cmpr_decay: Option<f32>,
+
+    /// Write the best feasible solution so far to this file on every improvement
+    #[arg(long, value_name = "PATH", help = "Write the best feasible solution so far (same JSON as the final output) on every improvement")]
+    pub snapshot: Option<String>,
+
+    /// Do not write intermediate solution SVGs (the final SVG is still written)
+    #[arg(long, help = "Do not write intermediate solution SVGs")]
+    pub no_intermediate_svg: bool,
 }
 
 impl MainCli {
@@ -54,6 +85,20 @@ impl MainCli {
             config.expl_cfg.separator_config.n_workers = workers.get();
             config.cmpr_cfg.separator_config.n_workers = workers.get();
         }
+        if let Some(max_fails) = self.max_fails {
+            config.expl_cfg.max_conseq_failed_attempts = Some(max_fails.get());
+        }
+        if let Some(cmpr_decay) = self.cmpr_decay {
+            config.cmpr_cfg.shrink_decay = ShrinkDecayStrategy::FailureBased(cmpr_decay);
+        }
+        if let Some(max_separations) = self.max_separations {
+            // Same 80/20 split as -t: exploration takes the first 80% of the calls, compression the rest
+            let expl = (max_separations.get() as f32 * DEFAULT_EXPLORE_TIME_RATIO) as usize;
+            let cmpr = max_separations.get() - expl;
+            warn!("[MAIN] separator call budget: {max_separations} (exploration {expl}, compression {cmpr})");
+            config.expl_cfg.max_separations = Some(expl);
+            config.cmpr_cfg.max_separations = Some(cmpr);
+        }
     }
 }
 
@@ -62,6 +107,9 @@ pub struct ExtSPOutput {
     #[serde(flatten)]
     pub instance: ExtSPInstance,
     pub solution: ExtSPSolution,
+    /// Why the search stopped; `in_progress` in snapshots. Absent in files written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<StopReason>,
 }
 
 pub fn init_logger(level_filter: LevelFilter, log_file_path: &Path) -> Result<()> {
@@ -129,6 +177,18 @@ pub fn write_json(json: &impl Serialize, path: &Path, log_lvl: Level) -> Result<
             .to_str()
             .unwrap()
     );
+    Ok(())
+}
+
+/// Writes JSON to `<path>.tmp`, flushes it to disk, then renames it over `path`.
+/// A reader or a killed process sees either the old file or the new one, never a partial one.
+pub fn write_json_atomic(json: &impl Serialize, path: &Path) -> Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let mut writer = BufWriter::new(File::create(&tmp)?);
+    serde_json::to_writer_pretty(&mut writer, json)?;
+    writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    fs::rename(&tmp, path)?;
     Ok(())
 }
 
